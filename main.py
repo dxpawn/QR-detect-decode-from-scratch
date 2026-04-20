@@ -20,15 +20,15 @@ from typing import Dict, List, Optional, Tuple
 import cv2
 import numpy as np
 
-# ── Worker globals (set once per worker process via initializer) ───────────────
+# -- Worker globals (set once per worker process via initializer) ---------------
 _worker_detector = None
 _worker_decoder = None
 
 def _worker_init(no_decode: bool):
-    """Initializer for ProcessPoolExecutor workers — creates one detector/decoder
+    """Initializer for ProcessPoolExecutor workers - creates one detector/decoder
     per process so we pay construction cost only once, not per image.
     cv2.setNumThreads(1) prevents each worker from spawning its own OpenCV thread
-    pool, which would cause oversubscription and 4× slowdown with 4 workers."""
+    pool, which would cause oversubscription and 4x  slowdown with 4 workers."""
     global _worker_detector, _worker_decoder
     cv2.setNumThreads(1)
     _worker_detector = QRDetector()
@@ -39,9 +39,9 @@ def _process_image_worker(args):
     path, image_id = args
     return process_image(path, image_id, _worker_detector, _worker_decoder, verbose=False)
 
-# ══════════════════════════════════════════════════════════════════════════════
+# ==============================================================================
 # PART 1: GALOIS FIELD GF(256) ARITHMETIC
-# ══════════════════════════════════════════════════════════════════════════════
+# ==============================================================================
 
 _GF_EXP = [0] * 512
 _GF_LOG = [0] * 256
@@ -151,9 +151,9 @@ def rs_decode(received, n_ec):
     return None
 
 
-# ══════════════════════════════════════════════════════════════════════════════
+# ==============================================================================
 # PART 2: QR CODE STANDARD TABLES
-# ══════════════════════════════════════════════════════════════════════════════
+# ==============================================================================
 
 _ALPHA_CHARS = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ $%*+-./:' 
 
@@ -250,9 +250,9 @@ def _ccb(mode, ver):
     return 8
 
 
-# ══════════════════════════════════════════════════════════════════════════════
+# ==============================================================================
 # PART 3: QR CODE DETECTION (FINDER PATTERN BASED)
-# ══════════════════════════════════════════════════════════════════════════════
+# ==============================================================================
 
 _K3 = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))  # pre-built kernel
 
@@ -270,7 +270,7 @@ def _binaries_lazy(gray):
     _, b = cv2.threshold(blur_g, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
     yield b
 
-    # Mean adaptive block=21 (larger blocks → fewer contours)
+    # Mean adaptive block=21 (larger blocks -> fewer contours)
     yield cv2.adaptiveThreshold(blur_g, 255, cv2.ADAPTIVE_THRESH_MEAN_C,
                                 cv2.THRESH_BINARY_INV, 21, 4)
 
@@ -285,7 +285,7 @@ def _binaries_lazy(gray):
     yield cv2.adaptiveThreshold(cv2.GaussianBlur(geq_sharp, (3, 3), 0), 255,
                                 cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 15, 2)
 
-    # Raw + block=7 (expensive — fine detail, many tiny contours)
+    # Raw + block=7 (expensive - fine detail, many tiny contours)
     yield cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
                                 cv2.THRESH_BINARY_INV, 7, 2)
 
@@ -312,7 +312,7 @@ def _find_finder_candidates(binary):
         ci = hier[i][2]
         if ci < 0:
             continue  # no child
-        # Bounding-rect gate first — much cheaper than contourArea.
+        # Bounding-rect gate first - much cheaper than contourArea.
         x, y, bw, bh = cv2.boundingRect(cnt)
         if bw < 3 or bh < 3:
             continue
@@ -393,7 +393,7 @@ def _order_corners(pts):
     """Return corners in CW order (TL, TR, BR, BL). For already-ordered input
     this is the identity; otherwise we sort by polar angle around the centroid
     which stays correct under arbitrary rotation. The simple argmin-of-sum
-    scheme breaks for QRs rotated ~45° (two corners collide onto the same
+    scheme breaks for QRs rotated ~45 deg (two corners collide onto the same
     extremum and the quadrilateral degenerates to a line).
     """
     pts = np.array(pts, dtype=np.float32)
@@ -432,8 +432,8 @@ def _point_in_quad(point, corners):
 
 
 def _count_points_in_quad(points_np, corners):
-    """Vectorised: count how many points (N×2 numpy array) lie strictly
-    inside the quadrilateral `corners` (4×2). Returns an int."""
+    """Vectorised: count how many points (N x 2 numpy array) lie strictly
+    inside the quadrilateral `corners` (4 x 2). Returns an int."""
     if points_np.size == 0:
         return 0
     cs = np.asarray(corners, dtype=np.float64)
@@ -479,8 +479,8 @@ def _validate_corners(corners):
 def _best_module_size(dist_h, dist_v, avg_finder_side):
     """Pick the module size (in px) that best reconciles the finder-centre
     distance with a plausible QR version. `avg_finder_side` should be the
-    bounding-box side (not sqrt of area — contour area under-measures the
-    7×7 outer ring by 30–50 % because `cv2.contourArea` of the outer
+    bounding-box side (not sqrt of area - contour area under-measures the
+    7 x 7 outer ring by 30-50 % because `cv2.contourArea` of the outer
     contour only traces its 4-connected outline on the inverted binary).
     """
     dist_avg = (dist_h + dist_v) / 2.0
@@ -526,7 +526,7 @@ def _estimate_corners(tl_pt, a_pt, b_pt, avg_finder_side):
     ru = rv / dist_h
     du = dv / dist_v
     mod = _best_module_size(dist_h, dist_v, avg_finder_side)
-    # 3.5 modules = half a finder pattern (centre → outer QR edge).
+    # 3.5 modules = half a finder pattern (centre -> outer QR edge).
     # Many GT annotations include a small margin beyond the QR data area
     # (up to the first module of the quiet zone). Adding ~1 extra module
     # on each side gives better IoU overlap without destroying precision
@@ -547,11 +547,11 @@ def _estimate_corners(tl_pt, a_pt, b_pt, avg_finder_side):
 
 def _merge_candidates(cands_list, merge_factor=0.6):
     """Merge duplicate candidates across strategies.
-    merge_factor controls the merge radius (× sqrt(finder area)).
-    Use a smaller factor (e.g. 0.5–0.7) for dense grids where neighbouring
+    merge_factor controls the merge radius (*sqrt(finder area)).
+    Use a smaller factor (e.g. 0.5-0.7) for dense grids where neighbouring
     QR finders are close; larger factor (1.0+) only for sparse scenes.
 
-    Vectorised: O(n²) work is pushed into numpy so large candidate sets
+    Vectorised: O(n^2) work is pushed into numpy so large candidate sets
     (100+) merge in tens of ms instead of seconds.
     """
     all_cands = [c for cands in cands_list for c in cands]
@@ -618,10 +618,10 @@ def _check_triplet(candidates, i, j, k, centers, sizes, gray_img, sides=None):
     si, sj, sk = sizes[i], sizes[j], sizes[k]
     avg_size = (si + sj + sk) / 3.0
     # Two estimators for the finder outer side:
-    #  - sqrt(area) ≈ 7·m for an axis-aligned finder (outer contour area =
-    #    49·m² when finder is fully filled on the inversion). Reliable scale.
-    #  - bounding-rect side = 7·m·(cosθ+sinθ) for a rotated finder, so it
-    #    overshoots by up to √2. Still useful as a max plausible extent.
+    #  - sqrt(area) ~ 7*m for an axis-aligned finder (outer contour area =
+    #    49*m^2 when finder is fully filled on the inversion). Reliable scale.
+    #  - bounding-rect side = 7*m*(cosθ+sinθ) for a rotated finder, so it
+    #    overshoots by up to sqrt2. Still useful as a max plausible extent.
     # For distance / timing checks we use the tighter area-based estimate so
     # rotated finders don't get falsely rejected for being "too close".
     avg_side_area = float(np.sqrt(avg_size))
@@ -663,16 +663,16 @@ def _check_triplet(candidates, i, j, k, centers, sizes, gray_img, sides=None):
     if not (0.85 < hyp_ratio < 2.2):
         return None
 
-    # Distance lower-bound: V1 QR has centre-to-centre 14 modules = 2×
-    # finder_side (finder = 7 modules). Require d >= 1.6× finder_side; the
+    # Distance lower-bound: V1 QR has centre-to-centre 14 modules = 2x 
+    # finder_side (finder = 7 modules). Require d >= 1.6x  finder_side; the
     # extra 0.1 margin handles noise / perspective distortion.
     finder_side = avg_side
     if d1 < finder_side * 1.6 or d2 < finder_side * 1.6:
         return None
-    # V40 QR: centre-to-centre = (4·40+17-7) = 170 modules = 24.3× finder_side.
+    # V40 QR: centre-to-centre = (4*40+17-7) = 170 modules = 24.3x  finder_side.
     # In practice the `avg_side_area = sqrt(contour_area)` underestimates
     # finder size for high-version codes (tiny module, antialiased contour
-    # area understates the 7·m outer extent). Cap generously at 34× so V40
+    # area understates the 7*m outer extent). Cap generously at 34x  so V40
     # codes with sloppy area measurements still pass.
     if d1 > finder_side * 34.0 or d2 > finder_side * 34.0:
         return None
@@ -681,10 +681,10 @@ def _check_triplet(candidates, i, j, k, centers, sizes, gray_img, sides=None):
     if _mod < 0.1:
         return None
 
-    # Timing pattern check — samples the line between two finder centres
+    # Timing pattern check - samples the line between two finder centres
     # (skipping the 3.5-module-wide finder patterns on each end), thresholds
-    # locally, and counts dark↔light transitions. A valid QR timing pattern
-    # alternates every module, giving transitions ≈ d/mod − 8. Bogus triplets
+    # locally, and counts dark to light transitions. A valid QR timing pattern
+    # alternates every module, giving transitions ~ d/mod − 8. Bogus triplets
     # whose "timing line" passes through QR data or white space will have
     # either too few or too many transitions.
     def check_timing(p1, p2, d):
@@ -710,12 +710,12 @@ def _check_triplet(candidates, i, j, k, centers, sizes, gray_img, sides=None):
         transitions = int(np.sum(binary[:-1] != binary[1:]))
         expected = max(1.0, d / _mod - 8)
         # Accept a wide but bounded range scaled by expected count:
-        # - For short lines (V1 QRs, only ~4 data modules between finders)
+        #   For short lines (V1 QRs, only ~4 data modules between finders)
         #   a real QR can legitimately show 0-2 transitions depending on
         #   the mask bits, so we relax the lower bound to 0.
-        # - For long lines (V3+) we require ≥0.25×expected to reject
+        #   For long lines (V3+) we require ≥0.25x expected to reject
         #   fakes whose line passes through mostly-white gaps.
-        # - The upper bound (≤1.8×expected) catches fakes whose line
+        #   The upper bound (≤1.8x expected) catches fakes whose line
         #   crosses two adjacent QR codes in a dense grid.
         if expected < 6:
             return transitions <= max(2, expected * 1.8)
@@ -730,8 +730,8 @@ def _check_triplet(candidates, i, j, k, centers, sizes, gray_img, sides=None):
     # Version estimate: use BOTH area- and bbox-based module sizes; accept the
     # triplet if either yields a plausible QR version. The area-based _mod
     # tends to undershoot for high-version codes (antialiased tiny modules),
-    # while bbox-based overshoots for rotated finders — testing both handles
-    # the full range V1..V40.
+    # while bbox-based overshoots for rotated finders - testing both handles
+    # the full range V1...V40.
     _N_h = d1 / _mod + 7
     _N_v = d2 / _mod + 7
     _v_est = ((_N_h + _N_v) / 2.0 - 17) / 4.0
@@ -755,7 +755,7 @@ def _check_triplet(candidates, i, j, k, centers, sizes, gray_img, sides=None):
     return (score, (i, j, k), angles, avg_side_bbox, op, corner_pt, candidates)
 
 
-# Module-level knobs for the dense-grid modal filter — tuned by grid search.
+# Module-level knobs for the dense-grid modal filter - tuned by grid search.
 _DENSE_N_THR = 20
 _DENSE_PCTL = 40
 _DENSE_MULT = 1.8
@@ -783,7 +783,7 @@ def _group_into_qrcodes(verified_candidates, gray_img):
             else:
                 expanded.append(cl)
         # Rescue: candidates in tiny clusters (size < 3) may be the 3 finder
-        # patterns of a large QR whose inter-finder distance exceeds k_factor×size.
+        # patterns of a large QR whose inter-finder distance exceeds k_factor x size.
         # Collect them and evaluate as a group.
         tiny_cands = [c for cl in expanded if len(cl) < 3 for c in cl]
         if len(tiny_cands) >= 3:
@@ -801,7 +801,7 @@ def _group_into_qrcodes(verified_candidates, gray_img):
                 if result:
                     all_scored.append(result)
     else:
-        # Adaptive K: more candidates → smaller K (grid-like arrangement means
+        # Adaptive K: more candidates -> smaller K (grid-like arrangement means
         # true finder partners are always among the closest few).
         if n > 150:
             K = 4
@@ -814,7 +814,7 @@ def _group_into_qrcodes(verified_candidates, gray_img):
         else:
             K = 12
         checked = set()
-        # Vectorised kNN via numpy (single O(n²) sort call)
+        # Vectorised kNN via numpy (single O(n^2) sort call)
         pts = np.array(centers, dtype=np.float32)
         d2 = ((pts[:, None, :] - pts[None, :, :]) ** 2).sum(axis=2)
         np.fill_diagonal(d2, np.inf)
@@ -834,7 +834,7 @@ def _group_into_qrcodes(verified_candidates, gray_img):
 
     # Dense-grid modal filter: on images with many finder candidates (e.g.
     # a lotsimage grid), the most common failure mode is a "cross-QR
-    # triplet" formed from finders of 2–3 different QR codes that happen
+    # triplet" formed from finders of 2-3 different QR codes that happen
     # to form a plausible right-angle triangle. Their leg lengths (d1, d2)
     # land on the *inter-QR* spacing rather than the *within-QR* spacing,
     # which tends to be smaller.  We estimate the within-QR scale from the
@@ -900,7 +900,7 @@ def _group_into_qrcodes(verified_candidates, gray_img):
         })
         used_ids.update(cids)
 
-    # ── Unused-finder second pass ───────────────────────────────────────
+    # -- Unused-finder second pass ---------------------------------------
     # Re-run grouping on candidates NOT used by the primary pass. The
     # phantom and modal filters both see a smaller point-set this time,
     # so some triplets that were (correctly) rejected as "crowded" in
@@ -962,7 +962,7 @@ def _refine_aa_bbox(gray, xmin, ymin, xmax, ymax):
     _, bw = cv2.threshold(blur, 0, 255,
                           cv2.THRESH_BINARY_INV | cv2.THRESH_OTSU)
     # Merge neighbouring modules into one blob. Keep the kernel small
-    # (≈4 % of the bbox side) so adjacent QRs in dense grids stay separate.
+    # (~4 % of the bbox side) so adjacent QRs in dense grids stay separate.
     k = max(2, int(min(w, h) * 0.04))
     kernel = np.ones((k, k), np.uint8)
     closed = cv2.morphologyEx(bw, cv2.MORPH_CLOSE, kernel)
@@ -982,7 +982,7 @@ def _refine_aa_bbox(gray, xmin, ymin, xmax, ymax):
         sx, sy, sw, sh, sa = stats[i]
         if sw < 6 or sh < 6:
             continue
-        # Reject elongated blobs — real QRs are roughly square.
+        # Reject elongated blobs - real QRs are roughly square.
         ar = max(sw, sh) / max(1, min(sw, sh))
         if ar > 2.0:
             continue
@@ -1046,11 +1046,11 @@ class QRDetector:
         geq = clahe.apply(gray)
         blur_g = cv2.GaussianBlur(geq, (3, 3), 0)
 
-        # ── Phase 1: up to 3 cheap strategies, run lazily ────────────────────
+        # -- Phase 1: up to 3 cheap strategies, run lazily --------------------
         # Otsu handles high-contrast images; Raw-G11 (no CLAHE/blur) preserves
         # fine finder detail on dense small-QR grids; CLAHE+G15 handles natural
         # photos with uneven illumination. We run them one-at-a-time and stop
-        # early when we already have plenty of strong candidates — this keeps
+        # early when we already have plenty of strong candidates - this keeps
         # runtime tight without sacrificing coverage on the hard cases.
 
         _MAX_CANDS = 90  # cap per strategy to prevent O(n³) blowup in grouping
@@ -1073,14 +1073,14 @@ class QRDetector:
 
         accum = []
 
-        # 1a) Otsu — fastest, handles high-contrast cases.
+        # 1a) Otsu - fastest, handles high-contrast cases.
         bin_otsu = cv2.threshold(blur_g, 0, 255,
                                  cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)[1]
         pool = _process_bin(bin_otsu, strict=True)
         if pool:
             accum.append(pool)
 
-        # 1b) CLAHE+G15 — the workhorse for natural photos with uneven light.
+        # 1b) CLAHE+G15 - the workhorse for natural photos with uneven light.
         b_g15 = cv2.adaptiveThreshold(blur_g, 255,
                                        cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
                                        cv2.THRESH_BINARY_INV, 15, 2)
@@ -1088,9 +1088,9 @@ class QRDetector:
         if pool:
             accum.append(pool)
 
-        # 1c) Raw-G11 — no CLAHE/blur, critical for dense small-QR grids where
+        # 1c) Raw-G11 - no CLAHE/blur, critical for dense small-QR grids where
         # CLAHE+blur smears tightly-packed finders together. Only run when the
-        # signals above suggest density (≥8 small finders) — otherwise the
+        # signals above suggest density (≥8 small finders) - otherwise the
         # extra findContours pass costs ~8ms with no gain.
         _small_cnt = sum(1 for p in accum for c in p if c['size'] < 400)
         _total_cnt = sum(len(p) for p in accum)
@@ -1098,7 +1098,7 @@ class QRDetector:
                    if _total_cnt else 0)
         # Run raw-G11 when (a) many small finders (dense grid signal), or
         # (b) we have very few finders overall (Otsu+G15 both under-performed
-        # — raw gray often recovers them), or (c) the avg finder size is
+        # - raw gray often recovers them), or (c) the avg finder size is
         # small suggesting tiny QRs.
         if (_small_cnt >= 6 or _total_cnt < 6 or
                 (_total_cnt >= 3 and _avg_sz < 300)):
@@ -1114,12 +1114,12 @@ class QRDetector:
         # Total-candidate circuit breaker: if Phase 1 already produced a huge
         # candidate pool but the triplet check found nothing, subsequent
         # fallback strategies just dump more noise candidates in and the
-        # O(n²) merge + kNN triplet enumeration blows up. Once we're above
+        # O(n^2) merge + kNN triplet enumeration blows up. Once we're above
         # this threshold, additional preprocessing is unlikely to help.
         def _too_many_cands():
             return sum(len(p) for p in accum) > 160
 
-        # ── Phase 2: G11 (CLAHE-equalised) ────────────────────────────────
+        # -- Phase 2: G11 (CLAHE-equalised) --------------------------------
         if not qrcodes and not _too_many_cands():
             b11 = cv2.adaptiveThreshold(geq, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
                                         cv2.THRESH_BINARY_INV, 11, 2)
@@ -1128,7 +1128,7 @@ class QRDetector:
                 accum.append(pool)
                 qrcodes = self._assemble_qrs(accum, gray)
 
-        # ── Phase 3: sharpened + G15 (blurry / low-contrast) ──────────────
+        # -- Phase 3: sharpened + G15 (blurry / low-contrast) --------------
         if not qrcodes and not _too_many_cands():
             blur_s = cv2.GaussianBlur(geq, (0, 0), 3)
             geq_sharp = np.clip(cv2.addWeighted(geq, 1.8, blur_s, -0.8, 0), 0, 255).astype(np.uint8)
@@ -1140,7 +1140,7 @@ class QRDetector:
                 accum.append(pool)
                 qrcodes = self._assemble_qrs(accum, gray)
 
-        # ── Phase 4: G25 + morph-close (noisy / scanned prints) ──
+        # -- Phase 4: G25 + morph-close (noisy / scanned prints) --
         if not qrcodes and not _too_many_cands():
             b25 = cv2.morphologyEx(
                 cv2.adaptiveThreshold(blur_g, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
@@ -1151,8 +1151,8 @@ class QRDetector:
                 accum.append(pool)
                 qrcodes = self._assemble_qrs(accum, gray)
 
-        # ── Phase 5: Mean-21 (pixel-level adaptive mean, robust for weak
-        # edges and darkish QRs) ──────────────────────────────────────────
+        # -- Phase 5: Mean-21 (pixel-level adaptive mean, robust for weak
+        # edges and darkish QRs) ------------------------------------------
         if not qrcodes and not _too_many_cands():
             bm21 = cv2.adaptiveThreshold(blur_g, 255, cv2.ADAPTIVE_THRESH_MEAN_C,
                                          cv2.THRESH_BINARY_INV, 21, 4)
@@ -1161,7 +1161,7 @@ class QRDetector:
                 accum.append(pool)
                 qrcodes = self._assemble_qrs(accum, gray)
 
-        # ── Phase 5b: Raw-7 fallback (fine-detail, small / damaged QRs) ───
+        # -- Phase 5b: Raw-7 fallback (fine-detail, small / damaged QRs) ---
         if not qrcodes and not _too_many_cands():
             b7 = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
                                        cv2.THRESH_BINARY_INV, 7, 2)
@@ -1170,7 +1170,7 @@ class QRDetector:
                 accum.append(pool)
                 qrcodes = self._assemble_qrs(accum, gray)
 
-        # ── Phase 6: 2× upscale for small QR codes ───────────────────────
+        # -- Phase 6: 2x  upscale for small QR codes -----------------------
         # Fires when (a) earlier phases found nothing, or (b) a tiny-QR
         # dense grid signal is present (small image, few detections with
         # small finders). The second branch covers lotsimage cases where
@@ -1190,7 +1190,7 @@ class QRDetector:
                 gray_up = cv2.resize(orig_gray_u,
                                      (int(o_w0 * up), int(o_h0 * up)),
                                      interpolation=cv2.INTER_LINEAR)
-                # Multi-block binarization — merging cands across 3 block
+                # Multi-block binarization - merging cands across 3 block
                 # sizes multiplies the odds of each tiny finder ringing
                 # through at least one block's local mean threshold,
                 # which is the bottleneck for 60-QR lotsimages.
@@ -1202,7 +1202,7 @@ class QRDetector:
                 if pool0 and len(pool0) >= 3:
                     up_pools.append(pool0)
                 # Add a second block only when the first pass signals a
-                # dense tiny-QR grid — many small finders. This keeps the
+                # dense tiny-QR grid - many small finders. This keeps the
                 # per-image cost of Phase 6 bounded so that the overall
                 # runtime budget (<20 ms/img) is preserved for normal
                 # images while still maximising recall on lotsimages.
@@ -1226,7 +1226,7 @@ class QRDetector:
                                 'finder_side': qr.get('finder_side', 0) / up,
                             })
 
-        # ── Dense-QR rescue ──────────────────────────────────────────────
+        # -- Dense-QR rescue ----------------------------------------------
         # Triggers for images likely to contain many small QR codes (e.g.
         # `lotsimage*`). Runs in ADDITION to whatever Phase 1 found, since
         # dense grids can have some QRs detected by CLAHE+G15 while the bulk
@@ -1239,14 +1239,14 @@ class QRDetector:
             _all_sizes = [c['size'] for pool in accum for c in pool]
             if _all_sizes:
                 small_cnt = sum(1 for s in _all_sizes if s < 400)
-                # 20+ small finders → dense grid likely; also trigger if the
+                # 20+ small finders -> dense grid likely; also trigger if the
                 # raw-G11 strategy (index 2 in cheap_bins) alone produced
-                # many finders — that's a strong density signal.
+                # many finders - that's a strong density signal.
                 if small_cnt >= 20:
                     need_dense = True
         # Also trigger for tiny-QR lotsimage cases where Phase 1 fails at
-        # native resolution but Phase 6 (2× upscale) found a few small-finder
-        # QRs — strong indicator of a dense grid whose bulk detection still
+        # native resolution but Phase 6 (2 x  upscale) found a few small-finder
+        # QRs - strong indicator of a dense grid whose bulk detection still
         # needs the raw-gray fine-detail pipeline at higher resolution.
         if (not need_dense and o_max <= 720 and
                 1 <= len(qrcodes) <= 10 and
@@ -1290,7 +1290,7 @@ class QRDetector:
                             qrcodes.append({'corners': np.array(sc, dtype=np.float32),
                                             'finder_side': qr.get('finder_side', 0)})
 
-        # ── Grid-completion rescue (disabled) ────────────────────────────
+        # -- Grid-completion rescue (disabled) ----------------------------
         # Earlier experiments with inferring a regular QR grid from detected
         # cells and pixel-density checks generated more FPs than TPs. The
         # code is kept in the disabled branch for future experimentation.
@@ -1305,7 +1305,7 @@ class QRDetector:
                      float(np.mean(np.asarray(q['corners'])[:,1]))]
                     for q in qrcodes
                 ])
-                # Only apply when detected QRs are tight in size — a true
+                # Only apply when detected QRs are tight in size - a true
                 # grid scene.
                 if (np.max(_sizes_det) / (np.min(_sizes_det) + 1e-6) < 1.35
                         and np.std(_sizes_det) < _med_sz * 0.15):
@@ -1322,10 +1322,10 @@ class QRDetector:
                         lens = np.linalg.norm(vecs, axis=1)
                         med_len = float(np.median(lens))
                         if 0.6 * med_len < _med_sz * 1.6:
-                            # Tight-grid signal: QR size ≈ inter-QR spacing
+                            # Tight-grid signal: QR size ~ inter-QR spacing
                             # (grids in lotsimage are edge-to-edge).
                             # Compute grid cell from 2 orthogonal
-                            # spacings — take the shortest two that are
+                            # spacings - take the shortest two that are
                             # roughly perpendicular to each other.
                             orth_pairs = []
                             for a in range(len(vecs)):
@@ -1397,7 +1397,7 @@ class QRDetector:
                                                 patch = gray_native[ny1:ny2, nx1:nx2]
                                                 if patch.size == 0:
                                                     continue
-                                                # Otsu threshold on the patch → dark fraction.
+                                                # Otsu threshold on the patch -> dark fraction.
                                                 p_min, p_max = int(patch.min()), int(patch.max())
                                                 if p_max - p_min < 15:
                                                     continue
@@ -1462,7 +1462,7 @@ class QRDetector:
             aa_corners = [[xmin_e, ymin_e], [xmax_e, ymin_e],
                           [xmax_e, ymax_e], [xmin_e, ymax_e]]
             # `oriented_corners` are the tight, possibly-rotated quadrilateral
-            # around the QR — these are what the decoder needs. `corners`
+            # around the QR - these are what the decoder needs. `corners`
             # remains the 5%-expanded axis-aligned bbox used for IoU scoring.
             oriented = np.asarray(corners, dtype=np.float32).tolist()
             result.append({
@@ -1488,8 +1488,8 @@ class QRDetector:
             return ([], 0) if return_est else []
 
         # Merge ALL candidates across strategies then group.
-        # Cap merged at 300 to bound kNN triplet checking (O(n×K²)) for images
-        # with many QR codes (e.g. 60-QR grid → ~180 valid finder patterns).
+        # Cap merged at 300 to bound kNN triplet checking (O(n x K^2)) for images
+        # with many QR codes (e.g. 60-QR grid -> ~180 valid finder patterns).
         # Use a tighter merge factor (0.6) than the default so neighbouring
         # QR finders in dense grids don't collapse into a single candidate.
         merged = _merge_candidates(per_strategy, merge_factor=0.6)
@@ -1500,12 +1500,12 @@ class QRDetector:
         qrcodes = _group_into_qrcodes(merged, gray_img) if len(merged) >= 3 else []
 
         # Also try each strategy individually to catch QRs missed by merging.
-        # Skip this for dense inputs (merged >= 30) — the merged+kNN step
+        # Skip this for dense inputs (merged >= 30) - the merged+kNN step
         # already enumerates every plausible triplet and extra per-strategy
         # passes just waste time re-evaluating the same triplets. Also skip
         # when the merged pass found nothing AND the candidate pool is
         # already big (likely a noisy image with no real QR): per-strategy
-        # retries are O(M×K²) and blow up runtime without improving recall.
+        # retries are O(M x K^2) and blow up runtime without improving recall.
         has_triplets = [v for v in per_strategy if len(v) >= 3]
         est_total = max(1, len(merged) // 3)
         retry_ok = (len(qrcodes) < est_total and len(merged) < 30 and
@@ -1521,15 +1521,15 @@ class QRDetector:
         return (qrcodes, est_total) if return_est else qrcodes
 
 
-# ══════════════════════════════════════════════════════════════════════════════
+# ==============================================================================
 # PART 4: QR CODE DECODER
-# ══════════════════════════════════════════════════════════════════════════════
+# ==============================================================================
 
 _BCH_FORMAT_GEN = 0b10100110111           # g(x) = x^10 + x^8 + x^5 + x^4 + x^2 + x + 1
 _BCH_VERSION_GEN = 0b1111100100101       # g(x) for 18-bit version info code
 
 def _bch_format_encode(data_5bit: int) -> int:
-    """Encode 5 format bits → 15-bit BCH(15,5) codeword (no XOR mask)."""
+    """Encode 5 format bits -> 15-bit BCH(15,5) codeword (no XOR mask)."""
     val = data_5bit << 10
     for i in range(4, -1, -1):
         if val & (1 << (i + 10)):
@@ -1537,7 +1537,7 @@ def _bch_format_encode(data_5bit: int) -> int:
     return (data_5bit << 10) | val
 
 def _bch_version_encode(version: int) -> int:
-    """Encode 6-bit version → 18-bit BCH(18,6) codeword."""
+    """Encode 6-bit version -> 18-bit BCH(18,6) codeword."""
     val = version << 12
     for i in range(5, -1, -1):
         if val & (1 << (i + 12)):
@@ -1554,20 +1554,20 @@ class QRDecoder:
          which corner is TL).
       3. For each rotation:
            a. Warp the quad to a square ROI.
-           b. Measure module size from the timing pattern → version.
+           b. Measure module size from the timing pattern -> version.
            c. Locate alignment patterns to build a bilinear sampling grid
               that tolerates perspective distortion.
            d. Read the 15-bit format info (both primary + secondary copies)
               and pick the (EC-level, mask) with smallest Hamming distance
               to a valid BCH(15,5) codeword.
            e. Unmask, zig-zag extract data bits, de-interleave codeword
-              blocks, run Reed–Solomon correction block-by-block.
+              blocks, run Reed-Solomon correction block-by-block.
            f. Parse the mode indicators and content (numeric / alnum /
               byte / kanji / ECI).
       4. Return the first non-empty result; otherwise return ''.
     """
 
-    # Public API ────────────────────────────────────────────────────────────
+    # Public API ------------------------------------------------------------
     def decode(self, image: np.ndarray, qr_info) -> str:
         try:
             gray = (cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
@@ -1597,7 +1597,7 @@ class QRDecoder:
         except Exception:
             return ''
 
-    # Core attempt ──────────────────────────────────────────────────────────
+    # Core attempt ----------------------------------------------------------
     def _try_decode(self, gray: np.ndarray, corners: np.ndarray,
                     finder_side_px: float = 0.0) -> str:
         tl, tr, br, bl = corners
@@ -1766,10 +1766,10 @@ class QRDecoder:
 
     @staticmethod
     def _has_finder_at_corners(mat: np.ndarray) -> bool:
-        """A valid sampling shows finders at the TL, TR and BL 7×7 corners."""
+        """A valid sampling shows finders at the TL, TR and BL 7 x 7 corners."""
         return QRDecoder._finder_corner_score(mat) >= 2
 
-    # ── Finder-pattern–based refinement ─────────────────────────────────────
+    # -- Finder-pattern-based refinement -------------------------------------
     def _refine_to_finders(self, warped: np.ndarray):
         """Detect the 3 finder patterns inside the (already-warped) QR and
         re-warp so their centres sit at the canonical positions for a QR
@@ -1839,7 +1839,7 @@ class QRDecoder:
         bl_c = np.array(chosen[2]['center'], dtype=np.float32)
         sizes = np.array([c['size'] for c in chosen], dtype=np.float32)
 
-        # Module pitch from finder-area size (≈ 7 modules per side).
+        # Module pitch from finder-area size (~ 7 modules per side).
         fs = float(np.mean(np.sqrt(sizes)))
         if fs <= 0:
             return None
@@ -1847,7 +1847,7 @@ class QRDecoder:
         d_avg = 0.5 * (np.linalg.norm(tr_c - tl_c) + np.linalg.norm(bl_c - tl_c))
         if d_avg <= 0 or module_px <= 0:
             return None
-        # TL↔TR distance in modules = N - 7.
+        # TL to TR distance in modules = N - 7.
         N_est = int(round(d_avg / module_px)) + 7
         V = int(round((N_est - 17) / 4.0))
         V = max(1, min(40, V))
@@ -1868,17 +1868,17 @@ class QRDecoder:
                                       borderMode=cv2.BORDER_REPLICATE)
         return refined, V
 
-    # ── Version detection via timing pattern ────────────────────────────────
+    # -- Version detection via timing pattern --------------------------------
     def _detect_version(self, warped: np.ndarray) -> Optional[int]:
         """Count the modules along the horizontal + vertical timing pattern
-        between the TL↔TR and TL↔BL finders. Full side = 4V+17 modules.
+        between the TL to TR and TL to BL finders. Full side = 4V+17 modules.
         """
         S = warped.shape[0]
         # The QR fills the whole warped square. Timing patterns sit on row ~=
         # row 6 of the module grid, between column 7 and column N-8. But we
-        # don't know N yet — so count transitions over the middle band in
+        # don't know N yet - so count transitions over the middle band in
         # ROWS where row 6 of the QR should fall regardless of V.
-        # The finder pattern is always 7 modules → sits in rows 0..6 of QR.
+        # The finder pattern is always 7 modules -> sits in rows 0..6 of QR.
         # Therefore its centre is at row 3. For an unknown V we sample both
         # timing strips that run through row 6 / col 6 of the QR grid,
         # located at y = 6.5/N * S. Since we don't know N, we'll scan every
@@ -1905,7 +1905,7 @@ class QRDecoder:
         version = max(1, min(40, version))
         # For versions >= 7, try to read the 18-bit version info to confirm.
         if version >= 7:
-            # We'd need the sampled grid for that — defer to self._sample_grid.
+            # We'd need the sampled grid for that - defer to self._sample_grid.
             pass
         return version
 
@@ -1921,8 +1921,8 @@ class QRDecoder:
                               cv2.THRESH_BINARY + cv2.THRESH_OTSU)
         if axis == 'h':
             # Horizontal timing runs along row 6 of the QR. Relative
-            # vertical position ~ 6.5 / N * S. Try rows near 0.15 × S,
-            # 0.19 × S, 0.23 × S, ... to find the one with the most runs.
+            # vertical position ~ 6.5 / N * S. Try rows near 0.15  x  S,
+            # 0.19  x  S, 0.23  x  S, ... to find the one with the most runs.
             candidates_y = [int(S * f) for f in (0.10, 0.14, 0.18, 0.22, 0.26)]
             best = None
             for y in candidates_y:
@@ -1977,9 +1977,9 @@ class QRDecoder:
         V = max(1, min(40, V))
         return 4 * V + 17
 
-    # ── Build module sampling grid ──────────────────────────────────────────
+    # -- Build module sampling grid ------------------------------------------
     def _sample_grid(self, warped: np.ndarray, version: int) -> Optional[np.ndarray]:
-        """Produce an N×N binary matrix by averaging over a small box around
+        """Produce an N x N binary matrix by averaging over a small box around
         each module centre, then thresholding with a blended global/local
         Otsu so that uneven illumination doesn't flip individual modules.
         For versions >= 2 we also refine the sampling grid using alignment
@@ -2055,7 +2055,7 @@ class QRDecoder:
                     continue
                 ex = (ac + 0.5) * module
                 ey = (ar + 0.5) * module
-                # Search within ±1.5 modules for the darkest 5×5 module-cluster centre.
+                # Search within ±1.5 modules for the darkest 5 x 5 module-cluster centre.
                 best = self._find_alignment_centre(th, ex, ey, module)
                 if best is not None:
                     expected.append([ex, ey])
@@ -2067,7 +2067,7 @@ class QRDecoder:
         observed += [[0, 0], [S, 0], [S, S], [0, S]]
         src = np.array(observed, dtype=np.float32)
         dst = np.array(expected, dtype=np.float32)
-        # Compute a mapping from expected (linear grid) → observed (true).
+        # Compute a mapping from expected (linear grid) -> observed (true).
         if len(src) >= 4:
             try:
                 H, _ = cv2.findHomography(dst, src, 0)
@@ -2096,7 +2096,7 @@ class QRDecoder:
         if x1 - x0 < 3 or y1 - y0 < 3:
             return None
         patch = th[y0:y1, x0:x1]
-        # Alignment centre is a dark pixel surrounded by a light ring —
+        # Alignment centre is a dark pixel surrounded by a light ring -
         # equivalent to the peak of an eroded dark blob. Use connected
         # components on the dark mask.
         dark = (patch < 128).astype(np.uint8) * 255
@@ -2105,7 +2105,7 @@ class QRDecoder:
         best_dx = 1e9
         for i in range(1, nb):
             area = stats[i, cv2.CC_STAT_AREA]
-            # Centre module is 1×1 modules; in warped coords its area is ~ module².
+            # Centre module is 1 x 1 modules; in warped coords its area is ~ module^2.
             if 0.25 * module * module < area < 4.0 * module * module:
                 cx = x0 + cent[i, 0]
                 cy = y0 + cent[i, 1]
@@ -2115,7 +2115,7 @@ class QRDecoder:
                     best = [float(cx), float(cy)]
         return best
 
-    # ── Format info ─────────────────────────────────────────────────────────
+    # -- Format info ---------------------------------------------------------
     def _read_format(self, mat: np.ndarray) -> Optional[Tuple[str, int]]:
         """Read the 15-bit format code from both copies and decode it.
 
@@ -2162,9 +2162,9 @@ class QRDecoder:
         mask_id = info & 0x7
         return _EC_LEVEL_INV.get(ec_bits, 'M'), mask_id
 
-    # ── Function-pattern mask ───────────────────────────────────────────────
+    # -- Function-pattern mask -----------------------------------------------
     def _build_func_mask(self, N: int, version: int) -> np.ndarray:
-        """Return a boolean N×N array: True for function-pattern modules
+        """Return a boolean N x N array: True for function-pattern modules
         (finder, separator, timing, format, alignment, dark module, version)
         and False for data modules."""
         m = np.zeros((N, N), dtype=bool)
@@ -2177,7 +2177,7 @@ class QRDecoder:
         m[:, 6] = True
         # Format info strip positions are inside the finder-separator boxes
         # above, so already marked.
-        # Dark module at (N-8, 8) — inside bottom-left separator box already.
+        # Dark module at (N-8, 8) - inside bottom-left separator box already.
         # Alignment patterns.
         if version >= 2:
             ap = _AP_INTERVALS[version - 1]
@@ -2191,13 +2191,13 @@ class QRDecoder:
                         continue
                     m[max(0, ar - 2):min(N, ar + 3),
                       max(0, ac - 2):min(N, ac + 3)] = True
-        # Version info blocks (v >= 7): 6×3 near top-right + bottom-left finders.
+        # Version info blocks (v >= 7): 6 x 3 near top-right + bottom-left finders.
         if version >= 7:
             m[N - 11:N - 8, 0:6] = True
             m[0:6, N - 11:N - 8] = True
         return m
 
-    # ── Data extraction (zig-zag) ───────────────────────────────────────────
+    # -- Data extraction (zig-zag) -------------------------------------------
     def _extract_bits(self, mat: np.ndarray, func_mask: np.ndarray,
                       mask_id: int) -> List[int]:
         """Walk the QR in the standard zig-zag right-to-left column-pair
@@ -2238,7 +2238,7 @@ class QRDecoder:
             cw.append(b)
         return cw
 
-    # ── Reed–Solomon de-interleave + correction ─────────────────────────────
+    # -- Reed-Solomon de-interleave + correction -----------------------------
     def _rs_correct(self, codewords: List[int], version: int,
                     ec_level: str) -> Optional[List[int]]:
         if version not in _ECC_TABLE or ec_level not in _ECC_TABLE[version]:
@@ -2281,14 +2281,14 @@ class QRDecoder:
             combined = data_parts[bi] + ec_parts[bi]
             fixed = rs_decode(combined, e_len)
             if fixed is None:
-                # RS said uncorrectable — we still try to continue with the
+                # RS said uncorrectable - we still try to continue with the
                 # raw data bytes, but mark as degraded by returning None so
                 # the caller can try another mask candidate.
                 return None
             corrected_all.extend(fixed[:d_len])
         return corrected_all
 
-    # ── Data stream decoding ────────────────────────────────────────────────
+    # -- Data stream decoding ------------------------------------------------
     def _decode_data(self, data_codewords: List[int], version: int) -> str:
         if not data_codewords:
             return ''
@@ -2357,18 +2357,18 @@ class QRDecoder:
                     pos += 24
                 else:
                     break
-            elif mode == '0011':     # Structured append header — skip it.
+            elif mode == '0011':     # Structured append header - skip it.
                 # 4-bit seq + 4-bit total + 8-bit parity = 16 bits
                 pos += 16
             elif mode == '0101' or mode == '1001':
-                # FNC1 in first/second position — ignore, continue decoding.
+                # FNC1 in first/second position - ignore, continue decoding.
                 if mode == '1001':
                     pos += 8   # application indicator
             else:
                 break
         return ''.join(out)
 
-    # ── Mode decoders ───────────────────────────────────────────────────────
+    # -- Mode decoders -------------------------------------------------------
     @staticmethod
     def _decode_numeric(bits, pos, count):
         out = []
@@ -2457,9 +2457,9 @@ class QRDecoder:
         return ''.join(out), pos
 
 
-# ══════════════════════════════════════════════════════════════════════════════
+# ==============================================================================
 # PART 5: I/O AND ENTRY POINT
-# ══════════════════════════════════════════════════════════════════════════════
+# ==============================================================================
 
 def load_csv(csv_path: str) -> List[Dict]:
     images = []
@@ -2533,8 +2533,6 @@ def main():
     parser.add_argument('--verbose', '-v', action='store_true')
     # Decoding toggle: --decode=yes (default) runs the from-scratch decoder
     # and extracts content for every detected QR; --decode=no skips it.
-    # When decoding is on, the 20 ms/img speed budget is intentionally
-    # relaxed (the decoder is an opt-in bonus feature).
     parser.add_argument('--decode', nargs='?', const='yes', default='yes',
                         choices=['yes', 'no', 'Yes', 'No', 'YES', 'NO', 'true', 'false', '1', '0'],
                         help="Enable QR content decoding. Use --decode=no to skip. (default: yes)")
