@@ -1,0 +1,608 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[margin=2.3cm]{geometry}
+\usepackage{amsmath}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{xcolor}
+\usepackage{graphicx}
+\usepackage{enumitem}
+\usepackage{listings}
+\usepackage{hyperref}
+
+\hypersetup{
+    colorlinks=true,
+    linkcolor=black,
+    urlcolor=blue,
+}
+
+\lstset{
+    basicstyle=\ttfamily\small,
+    frame=single,
+    breaklines=true,
+    columns=fullflexible,
+    showstringspaces=false,
+}
+
+\title{AIT3002 Midterm Report: QR Code Detection and Decoding}
+\author{Vũ Nguyên Đan, 23020351}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\section{Method Overview}
+
+The program reads a CSV listing images, detects every QR code in each image,
+returns the four-corner quadrilateral of every detection, and optionally
+decodes the payload. Everything is written from scratch; no explicit QR library
+(\texttt{pyzbar}, \texttt{zxing}, \texttt{cv2.QRCodeDetector}, etc.) and no
+deep-learning framework are used.  The only third-party dependencies are
+OpenCV (image I/O, thresholding, contour finding, perspective warp) and
+NumPy (array math).
+
+The pipeline is:
+
+\begin{enumerate}[leftmargin=1.6em, itemsep=0.2em]
+    \item Read the image. If $\max(h,w) > 1024$, resize so the long side is
+          $1024$ px (\texttt{INTER\_AREA}). Work in grayscale; precompute
+          CLAHE on gray (\texttt{clipLimit}=3.0, \texttt{tileGridSize}=(8,8))
+          and a light Gaussian blur of that CLAHE output.
+    \item Run the phased binarization cascade in the next section. Each
+          phase may append a new candidate pool; pools are merged and passed
+          to triplet grouping.
+    \item Merge near-duplicate finder candidates across pools, cap the
+          merged list, group triplets, estimate corners, deduplicate QRs.
+    \item Optionally run a $2\times$ upscale pass on small images when few
+          or no QRs are found, and/or a separate dense-grid upscale pass
+          when many small finders are present.
+    \item Convert each oriented quadrilateral to a $5\%$-expanded
+          axis-aligned box for \texttt{output.csv} \texttt{corners}, and
+          keep \texttt{oriented\_corners} plus \texttt{finder\_side} for the
+          decoder.
+    \item If \texttt{--decode=yes}, for every detection run the decoder
+          described later in this document.
+    \item Write \texttt{output.csv} with one row per detected QR (or one
+          empty row for images with zero QRs).
+\end{enumerate}
+
+\section{Image preprocessing and detection cascade}
+
+All binarizations use the scaled working image. Phase~1 always runs; later
+phases run only when \textbf{no} QR has been assembled yet
+(\texttt{len(qrcodes)==0}) and the total candidate count across pools is
+$\le 160$ (circuit breaker). Each binary image feeds
+\texttt{\_find\_finder\_candidates}; if the pool has $\ge 3$ candidates,
+\texttt{\_scan\_line\_verify\_np} must pass on at least two of four directions
+when \texttt{strict=True} (Phase~1). Phases~2--5b pass
+\texttt{strict=False} (only one direction required) to recover weak
+binaries. If verified count falls below three, the unfiltered candidate pool
+is kept. Each pool is capped at $90$ entries.
+
+\paragraph{Phase 1 (always).}
+\begin{enumerate}[label=(\alph*), leftmargin=1.6em, itemsep=0.15em]
+  \item Otsu on blurred CLAHE gray (\texttt{THRESH\_BINARY\_INV}).
+  \item Adaptive Gaussian $15\times15$, $C=2$ on the same blur.
+  \item Raw gray adaptive Gaussian $11\times11$, $C=2$ only if
+        small-finder count $\ge 6$ across pools so far, or total finders
+        $<6$, or average finder area $<300$ when at least three finders
+        exist.
+\end{enumerate}
+After Phase~1, \texttt{\_assemble\_qrs} runs on all accumulated pools.
+
+\paragraph{Phases 2--5b (only if still no QRs and not too many candidates).}
+
+
+In code, these five fallback branches are named Phase~2, Phase~3, Phase~4,
+Phase~5a, and Phase~5b.
+
+
+\begin{enumerate}[label=(\alph*), leftmargin=1.6em, itemsep=0.15em]
+  \item Adaptive Gaussian $11\times11$ on CLAHE-equalised gray (no extra blur).
+  \item Unsharp mask on CLAHE ($1.8\times$ CLAHE $-$ $0.8\times$ Gaussian blur
+        $\sigma=3$), then adaptive Gaussian $15\times15$ on a $3\times3$ blur
+        of that sharpened image.
+  \item Adaptive Gaussian $25\times25$ on blurred CLAHE, then morphological
+        close with a $3\times3$ kernel; pool kept only if it has $\ge 3$
+        candidates.
+  \item Adaptive mean $21\times21$, $C=4$ on blurred CLAHE; pool kept only if
+        $\ge 3$ candidates.
+  \item Raw gray adaptive Gaussian $7\times7$, $C=2$; pool kept only if
+        $\ge 3$ candidates.
+\end{enumerate}
+
+\paragraph{Phase 6 (2$\times$ upscale, independent trigger).}
+If the original image long side $\le 720$ px and no QRs are found yet, the
+original gray image is resized by $2.0\times$. A second trigger is used for
+small images: if the long side $\le 640$ px, and
+$1\le|\text{QRs}|\le 8$, and some detection has
+\texttt{finder\_side}$<22$ px, the original gray image is resized by
+$2.0\times$. Up to three adaptive Gaussian binarizations (blocks $11$, and
+if many small finders also $9$ and $13$) run on the upscaled image; new QRs
+are merged after mapping corners back with \texttt{scale}/\texttt{up}.
+
+\subsection{Dense-grid rescue (additional pass)}
+
+This pass runs \textbf{in addition} to earlier phases when the long side
+$\le 1280$ px, there is at least one accumulated pool, and the count of
+finder candidates with contour area $<400$ is $\ge 20$. A second trigger:
+long side $\le 720$, $1\le|\text{QRs}|\le 10$, and some QR has
+\texttt{finder\_side}$<20$ px. The gray image is upscaled by
+\texttt{up = min(2.0, 1400 / max(h,w))}; the pass is skipped if
+\texttt{up}$<1.4$. On the upscaled image, adaptive Gaussian (block $11$)
+finder search runs with relaxed scan-line verification ($\ge 1$ direction);
+pools are capped at $180$ candidates. New QRs are merged if not duplicates.
+
+\subsection{Output geometry}
+
+Ground-truth boxes are axis-aligned. Each oriented quadrilateral is
+converted to its axis-aligned bounding rectangle, then expanded by
+$5\%$ around the centre (\texttt{\_BBOX\_EXPAND = 1.05}) before integer
+\texttt{corners} are written. \texttt{oriented\_corners} and
+\texttt{finder\_side} are kept for decoding.
+
+\section{QR Detection}
+
+\subsection{Finder Pattern Candidates}
+
+A QR finder pattern is a $7\times7$ module square with dark/light/dark/light/dark rings
+in the ratio $1{:}1{:}3{:}1{:}1$. In a binary image it
+shows up as three nested contours.
+
+For each binary image the detector:
+
+\begin{enumerate}[leftmargin=1.6em, itemsep=0.2em]
+\item Runs \texttt{cv2.findContours} with \texttt{RETR\_TREE} to obtain the
+      full hierarchy.
+\item Looks for chains of three nested contours whose areas roughly
+      satisfy $\text{outer}/\text{middle}\approx 49/25$ and
+      $\text{middle}/\text{inner}\approx 25/9$. Tolerances are loose
+      (factor $\le 12$) because perspective distortion and binarization
+      errors widen the ratios considerably.
+\item Rejects the outer contour if
+      $\max(b_w,b_h)/\min(b_w,b_h) > 4.5$ on its bounding rectangle.
+\item Verifies each survivor with a scan-line test: four lines through the
+      centroid (horizontal, vertical, two diagonals) are traced, the
+      binary run lengths are compared to the expected
+      $1{:}1{:}3{:}1{:}1$ pattern, and the candidate passes if at least
+      two of four directions match.
+\end{enumerate}
+
+Within each direction, any five consecutive runs are tested; each run
+length $r$ must satisfy $|r - e\cdot u| \le 0.85\,u + 1$ with unit
+$u = (\sum r)/7$ and expected pattern $e \in \{1,1,3,1,1\}$. This blocks
+most non-finder blobs that still satisfy nested-area ratios.
+
+\subsection{Candidate Merging}
+
+All per-strategy pools are concatenated. Merge radius between candidates
+$i$ and $j$ is $0.6 \cdot \max(\sqrt{\text{area}_i}, \sqrt{\text{area}_j})$
+(\texttt{merge\_factor}=0.6 in \texttt{\_merge\_candidates}). If Euclidean
+distance between centres is below that threshold, they belong to one
+cluster; greedy processing in descending \texttt{size} keeps one
+representative per cluster. The merged list is capped at $300$ entries
+before triplet search.
+
+\subsection{Triplet grouping and assignment}
+
+Triplets are enumerated differently by candidate count $n$:
+\begin{itemize}[leftmargin=1.4em, itemsep=0.2em]
+  \item $n \le 15$: union-find \texttt{\_spatial\_cluster} splits candidates
+        by distance ($k\_factor$ 5.0, then 3.1 on large clusters); all
+        $\binom{|C|}{3}$ triples inside each cluster (plus a ``tiny cluster''
+        rescue pool) are tested.
+  \item $n > 15$: for each finder, only pairs drawn from its $K$ nearest
+        neighbours are tried, with $K \in \{4,\ldots,12\}$ chosen from $n$
+        (smaller $K$ when $n$ is very large).
+\end{itemize}
+
+\texttt{\_check\_triplet} rejects a triple unless all of the following hold:
+\begin{itemize}[leftmargin=1.4em, itemsep=0.2em]
+  \item Pairwise $\sqrt{\text{area}}$ ratios between the three finders are
+        all $<2.3$ (tolerance parameter 1.3).
+  \item Sorted vertex angles: largest angle in $(40^\circ, 140^\circ)$,
+        smallest angle $\ge 8^\circ$.
+  \item From the largest-angle vertex, the two adjacent sides have length
+        ratio $\le 3.0$.
+  \item Hypotenuse divided by mean adjacent side lies in $(0.85, 2.2)$.
+  \item Each adjacent side length is between $1.6\times$ and $34\times$ the
+        mean $\sqrt{\text{finder area}}$ (lower bound rejects touching finders;
+        upper bound allows high versions with noisy area estimates).
+  \item Timing-pattern sampling along both arms from the right-angle vertex
+        passes heuristic transition-count checks relative to expected
+        module count.
+  \item Estimated version from both area- and bbox-based module sizes lies
+        in a permissive range around $[1,40]$.
+  \item Arms from the right-angle vertex are not too collinear:
+        $|\cos\angle(\vec v_0,\vec v_1)| \le 0.80$.
+\end{itemize}
+
+Score (lower is better) matches the code: largest angle $\theta$ at the
+right-angle vertex, side-arm ratio $r_{\text{side}}$, hypotenuse ratio
+$r_{\text{hyp}}$, and normalised size spread $\sigma_{\text{size}}$:
+\[
+s =
+2.5\,|\theta - 90^\circ|
++ 100\,(r_{\text{side}} - 1)
++ 100\,|r_{\text{hyp}} - 1.414|
++ 60\,\sigma_{\text{size}} .
+\]
+The middle term uses $(r_{\text{side}} - 1)$ without an absolute value,
+as in \texttt{main.py}.
+
+Post-filters: when $n \ge 20$, triplets whose legs exceed
+$1.8\times$ the 40th percentile of nearest-neighbour distances are dropped
+(modal filter against cross-QR triplets). Triplets whose estimated quad
+contains more than three finder centres in total are hard-rejected. Finders
+already used in accepted triplets can be re-grouped in a second pass when
+$3 \le \text{unused} \le 45$.
+
+\subsection{Corner estimation}
+
+From the right-angle vertex and the two opposite finder centres,
+\texttt{\_best\_module\_size} picks a module $m$ consistent with
+finder-to-finder distances. Outer corners move outward by
+\texttt{offset} $= 4m$ along the two arm directions (not $3.5m$: the
+extra half-module accounts for label padding). BR blends $0.6\times$
+parallelogram completion with $0.4\times$ an extension estimate.
+
+\section{QR Decoding}
+
+Decoding is optional and is controlled by \texttt{--decode=yes} or
+\texttt{--decode=no} (default \texttt{yes}). When off, decoding is skipped
+and the \texttt{content} field is left empty; when on there is no per-image
+time budget. \texttt{QRDecoder.decode} tries two corner orderings (CW mirror
+then CCW) and four cyclic rotations of each ($2\times4=8$ attempts) before
+giving up on one detection.
+
+\subsection{Perspective Rectification}
+
+The oriented four-corner quadrilateral returned by the detector is
+warped to a square of side
+$W = \operatorname{clip}(3 \times \text{side}_{\text{px}}, 240, 960)$
+with \texttt{cv2.getPerspectiveTransform} and
+\texttt{cv2.warpPerspective}. This first warp is intentionally generous
+because the detector's quadrilateral is known to overshoot the real QR
+edge by somewhere between $0$ and $1.5$ modules.
+
+\subsection{Finder-Pattern Refinement}
+
+Inside the warped image the detector re-runs its finder-pattern search
+(using three thresholding variants to cope with brightness loss from
+re-sampling). The three finders closest to the canonical corners
+$(0,0)$, $(W,0)$, $(0,W)$ are selected; from their centres the module
+size $m$ and version $V$ are recovered with
+\[
+m = \frac{\sqrt{A}}{7}, \qquad
+V = \frac{N - 17}{4}, \qquad
+N = \operatorname{round}\!\left(\tfrac{d_{\text{mean}}}{m}\right) + 7 .
+\]
+A second perspective warp maps the three finder centres to their
+canonical module coordinates
+$(3.5,\,3.5)$, $(N-3.5,\,3.5)$, $(3.5,\,N-3.5)$ at exactly $7$ pixels
+per module, so sampling can be done on a fixed integer grid. If the
+refinement step fails, the decoder falls back to timing-pattern version
+estimation combined with a brute-force search over margin values
+(in order) $\{1.0,\,0.5,\,1.5,\,0.0\}$ modules.
+
+\subsection{Bit matrix sampling}
+
+After finder refinement, each module is $7\times7$ pixels; the bit value
+uses the centre pixel of that block compared to a threshold map from
+\texttt{\_adaptive\_bit\_threshold}: global Otsu on the sample grid (clamped
+to $[30,225]$), plus a box blur whose kernel size is
+$\max(3,\lfloor N/4\rfloor)$ (odd), blended as $0.7\times\text{local} +
+0.3\times\text{global}$. On the pre-refinement fallback path,
+\texttt{cv2.remap} samples the first warp on a regular grid; quiet-zone
+margin is tried in order $\{1.0, 0.5, 1.5, 0.0\}$ modules.
+
+Before committing to a sampled matrix the decoder checks that at least
+two of the three finder-corner $7\times7$ blocks actually look like a
+finder (dark outer ring, dark inner $3\times3$). This catches
+misaligned samplings that would otherwise decode into nonsense.
+
+\subsection{Format Information}
+
+The 15-bit format string is read from two redundant locations on the
+module grid. After XOR with the fixed mask \texttt{0x5412} the 32 valid
+code words are compared by Hamming distance; the closest is kept if
+its distance is $\le 3$. The decoded bits give the error-correction
+level ($\{L, M, Q, H\}$) and mask index ($0{-}7$).
+
+\subsection{Zig-Zag Extraction and Unmasking}
+
+Data is extracted with the standard zig-zag walker: columns are
+traversed in pairs right-to-left, alternating bottom-up and top-down;
+column 6 (the vertical timing column) is skipped; modules flagged as
+function (finders, separators, timing, format, alignment, version
+info, dark module) are skipped. For each data module, the selected
+mask function is XOR-ed with the bit value.
+
+\subsection{Reed--Solomon Error Correction}
+
+Error correction is done over $GF(2^8)$ with primitive polynomial
+\texttt{0x11D}. The implementation comprises:
+
+\begin{itemize}[leftmargin=1.4em, itemsep=0.2em]
+  \item Precomputed log / anti-log tables for $GF(256)$ arithmetic.
+  \item Syndrome evaluation.
+  \item \textbf{Berlekamp--Massey} for the error-locator polynomial.
+  \item Chien search for error positions.
+  \item \textbf{Forney algorithm} for error magnitudes.
+\end{itemize}
+
+For versions with multiple blocks, codewords are first de-interleaved
+into their blocks according to the $(c, d, e)$ triples from the ISO
+18004 Appendix-I tables, each block is corrected independently, and
+the data portions are concatenated.
+
+\subsection{Data Decoding}
+
+The bit stream is parsed by four-bit mode indicators:
+
+\begin{center}
+\begin{tabular}{@{}lll@{}}
+\toprule
+Mode & Indicator & Packing \\
+\midrule
+Numeric      & \texttt{0001} & 3 digits / 10 bits, 2 / 7, 1 / 4 \\
+Alphanumeric & \texttt{0010} & pair / 11 bits, single / 6 \\
+Byte         & \texttt{0100} & 8 bits/byte, decoded as UTF-8 with
+                                 Latin-1 / Shift-JIS fallback \\
+Kanji        & \texttt{1000} & 13 bits/char, Shift-JIS \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+ECI designators, FNC1 markers and structured-append headers are
+skipped rather than honoured, which is sufficient for the vast
+majority of QRs in the data set.
+
+\section{Libraries and Algorithms}
+
+Third-party dependencies:
+
+\begin{itemize}[leftmargin=1.4em, itemsep=0.15em]
+  \item \textbf{OpenCV $\ge$ 4.5} -- \texttt{imread},
+        \texttt{cvtColor}, \texttt{createCLAHE},
+        \texttt{adaptiveThreshold}, \texttt{threshold}
+        (\texttt{OTSU}), \texttt{findContours},
+        \texttt{boundingRect}, \texttt{morphologyEx},
+        \texttt{getPerspectiveTransform},
+        \texttt{warpPerspective}, \texttt{remap},
+        \texttt{resize}. No \texttt{QRCodeDetector},
+        \texttt{detectAndDecode}, or related QR-specific APIs.
+  \item \textbf{NumPy $\ge$ 1.20} -- numerical arrays.
+  \item Standard library: \texttt{argparse}, \texttt{csv},
+        \texttt{multiprocessing}, \texttt{concurrent.futures}, etc.
+\end{itemize}
+
+\noindent
+\texttt{requirements.txt} lists only OpenCV and NumPy. The header comment in
+\texttt{main.py} mentions SciPy; no SciPy import is used at runtime.
+
+Core algorithms, all implemented from scratch:
+contour-hierarchy finder detection,
+scan-line $1{:}1{:}3{:}1{:}1$ verification,
+triplet geometric scoring,
+adaptive $k$-nearest-neighbour triplet enumeration for large $n$,
+spatial union--find clustering for small $n$,
+dense-grid modal and phantom triplet filters,
+dense-QR upscale rescue,
+perspective rectification,
+adaptive Otsu,
+BCH(15, 5) format-code decoding,
+GF($2^8$) arithmetic,
+Berlekamp--Massey, Chien search, Forney,
+zig-zag data extraction, four-mode data parser.
+
+No machine-learning model is trained or used.
+
+\section{Results on the Public Sets}
+
+Runs were executed with 12 worker processes on a consumer CPU. Each
+measurement below is wall-clock time reported by the program itself
+and includes process-pool startup. Table values are from one run per
+setting; wall-clock can vary across runs.
+
+\subsection{Detection Only (\texttt{--decode=no})}
+
+\begin{center}
+\begin{tabular}{@{}lrrrrrrr@{}}
+\toprule
+Split & Images & GT QRs & TP & FP & FN & F1 & Time \\
+\midrule
+train & 1083 & 1979 & 1184 & 154 & 795 & \textbf{0.7139} &
+        15.2 s (14 ms/img) \\
+valid &  309 &  508 &  359 &  36 & 149 & \textbf{0.7951} &
+         6.2 s (20 ms/img) \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Precision is $0.885$ (train) and $0.909$ (valid); recall is
+$0.598$ / $0.707$. In the measured run, wall-clock time is about
+$14$\,ms/image on the train split and about $20$\,ms/image on the valid split under the measured
+hardware (valid has fewer images so fixed pool overhead is amortised less).
+
+\subsection{Detection + Decoding (\texttt{--decode=yes})}
+
+F1 is unchanged from above (decoding does not alter the predicted
+quadrilaterals). The table adds decoding statistics.
+
+\begin{center}
+\begin{tabular}{@{}lrrrr@{}}
+\toprule
+Split & Detected QRs & Decoded & Decode rate & Time \\
+\midrule
+train & 1338 & 280 & 20.9\,\% & 39.9 s (37 ms/img) \\
+valid &  395 &  89 & 22.5\,\% & 17.3 s (56 ms/img) \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The provided ground-truth CSVs leave the \texttt{content} column empty,
+so public-split content correctness cannot be measured. In
+\texttt{evaluate.py}, \texttt{Content\_Accuracy} is computed over total TP,
+which follows \texttt{output\_requirement.md} section 5.4; with empty GT
+content on public, this value is not informative for decoder correctness.
+Inspection of the decoded strings shows that whenever the
+decoder succeeds, the output is meaningful (URLs, VCards, \texttt{TEL:},
+\texttt{MAILTO:}, and the test strings ``\texttt{Version 1 QR}'' /
+``\texttt{Version 2 QR Code Test Image}'' that appear in several
+categories).
+
+\subsection{Representative Outputs}
+
+Successful decodes include:
+\begin{itemize}[leftmargin=1.4em, itemsep=0.1em]
+  \item \texttt{http://www.sneakyparties.com.au}
+  \item \texttt{http://qr.westergasfabriek.nl/480}
+  \item \texttt{BEGIN:VCARD\textbackslash n VERSION:2.1 \textbackslash n
+        N:Gump;Forrest ...}
+  \item \texttt{ANA080514DHGE38V4TBT246927890 2070031}
+  \item \texttt{TEL:+4992815939305}
+\end{itemize}
+
+Typical detection failures:
+\begin{itemize}[leftmargin=1.4em, itemsep=0.1em]
+  \item Heavy motion blur --- the scan-line test stops validating the
+        $1{:}1{:}3{:}1{:}1$ pattern even when all three finders are
+        visually present.
+  \item Extreme perspective where two finders almost overlap; the
+        right-angle test fails.
+  \item Partially occluded QRs where one of the three finders is
+        physically missing (the pipeline requires three).
+  \item Very small QRs in \texttt{lotsimage} (module size below
+        $\sim 1.5$ px after downscaling) even after the upscale rescue.
+\end{itemize}
+
+Typical decoding failures (given that detection succeeded):
+\begin{itemize}[leftmargin=1.4em, itemsep=0.1em]
+  \item Finder-pattern refinement picks a spurious finder (text or a
+        reflection mimicking one), which throws the sampling grid off by
+        a full module.
+  \item High noise + curved surfaces: the format code survives but the
+        data portion has too many bit errors for Reed--Solomon to
+        correct.
+  \item Version $\ge 7$: version info block is not used for cross-check,
+        so if timing-based version estimation is wrong by one, the
+        grid is mis-sampled.
+\end{itemize}
+
+\subsection{Speed}
+
+Detection is near the $20$\,ms/image target on the training split.
+Decoding is slower because each detection tries eight corner orderings,
+then finder refinement; if that fails, up to four versions are tried and
+for each version up to four quiet-zone margins are tested before giving
+up. Up to twelve (EC level, mask) pairs are tried per matrix.
+Decoding has no time cap and can be disabled with \texttt{--decode=no}.
+
+\subsection{Reproducibility}
+
+The pipeline is deterministic: no random sampling and no randomized seed.
+\texttt{ProcessPoolExecutor.map} preserves input order, so for fixed code
+and input CSV order, output row ordering is deterministic.
+
+\section{Analysis and Discussion}
+
+\subsection{Difficulties}
+
+\begin{itemize}[leftmargin=1.4em, itemsep=0.2em]
+  \item Dense grid images (often filenames containing \texttt{lotsimage})
+        produce large finder candidate sets. Without spatial clustering
+        plus nearest-neighbour triplet pruning, exhaustive triplet search
+        would be too slow; without the modal and phantom filters, many
+        cross-QR false triplets would survive.
+  \item The detector's quadrilateral does not have a fixed margin
+        around the real QR edge; it varies between $0$ and
+        $\sim 1.5$ modules depending on which rescue path produced it.
+        Decoding only became reliable after the second, finder-anchored
+        warp was added.
+  \item Without ground-truth content strings there is no automatic
+        signal for decoder regressions; only the detection F1 and the
+        count of non-empty content rows were available during
+        development.
+\end{itemize}
+
+\subsection{Limitations}
+
+\begin{itemize}[leftmargin=1.4em, itemsep=0.2em]
+  \item Requires all three finder patterns: any QR with one finder
+        fully occluded is missed.
+  \item The format/mask search is a brute-force fallback when BCH
+        decoding fails; it can occasionally confirm a wrong mask
+        because a few mask+EC combinations happen to yield plausible
+        mode indicators.
+  \item Version $\ge 7$ version-info codewords are not decoded, so an
+        off-by-one version estimate on large QRs goes uncaught.
+  \item Kanji mode is implemented but not tested (no Kanji
+        QRs in the public set).
+\end{itemize}
+
+\subsection{Possible Improvements}
+
+\begin{itemize}[leftmargin=1.4em, itemsep=0.2em]
+  \item Two-finder rescue: when two clean finders are found but the
+        third is missing, synthesize a candidate from timing-pattern
+        extrapolation.
+  \item Use detected alignment-pattern centres to refine the
+        perspective warp for versions $\ge 2$, reducing the
+        misalignment that currently dominates the decoding failure
+        cases.
+  \item Decode version info for $V \ge 7$ to eliminate the
+        timing-based off-by-one.
+  \item Add a lightweight quality gate on the decoded text (UTF-8
+        validity, printable ratio) before accepting it, to suppress
+        the rare but present false positives from brute-force mask
+        search.
+  \item Port the critical inner loops of the scan-line verifier and
+        zig-zag walker to Cython or Numba to drop detection time
+        further.
+\end{itemize}
+
+\section{Overfitting and Generalization}
+
+The system is a hand-written rule-based pipeline; no model parameters
+are learned from the public training set. All thresholds (finder-size
+limits, triplet-scoring weights, morphological kernel sizes, adaptive
+block sizes, etc.) were chosen from first principles or from the QR
+specification. The numbers that depend on the data are:
+
+\begin{enumerate}[leftmargin=1.4em, itemsep=0.15em]
+  \item Numeric constants in the cascade (pool caps $90$/$300$/$180$,
+        merge factor $0.6$, circuit breaker $160$, dense triggers with
+        small-finder area threshold $400$, upscale limits, modal-filter
+        percentile $40$ and multiplier $1.8$, etc.).
+  \item The $5\%$ axis-aligned box expansion (\texttt{\_BBOX\_EXPAND =
+        1.05}) chosen from a sweep on the public training labels.
+  \item Scan-line ratio tolerance (default $0.85$ in
+        \texttt{\_check\_ratio\_runs}) and triplet scoring weights.
+\end{enumerate}
+
+These are hand-set constants, not weights from gradient-based training.
+Behaviour on a private test set can differ if image statistics differ,
+but nothing in the pipeline memorises per-image labels from the public CSVs.
+
+Re-running the evaluation on the train or valid split yields
+byte-identical \texttt{output.csv} files (no randomness, no
+timing-dependent behaviour), so any cross-run variation in reported
+F1 will come from changes to the program itself, not from
+stochasticity.
+
+\section{How to Run}
+
+\begin{lstlisting}
+pip install -r requirements.txt
+python main.py --data qr/public_train.csv          # default: decode=yes
+python main.py --data qr/public_valid.csv --decode=no
+python evaluate.py qr/output_valid.csv output.csv
+\end{lstlisting}
+
+The program always writes \texttt{output.csv} next to \texttt{main.py}.
+The workers count is auto-capped at $\min(12, \text{cpu\_count})$.
+
+\end{document}
