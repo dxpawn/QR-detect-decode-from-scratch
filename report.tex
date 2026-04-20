@@ -27,7 +27,7 @@
 }
 
 \title{AIT3002 Midterm Report: QR Code Detection and Decoding}
-\author{Vũ Nguyên Đan, 23020351}
+\author{Vũ Nguyên Đan - 23020351}
 \date{\today}
 
 \begin{document}
@@ -37,7 +37,7 @@
 
 The program reads a CSV listing images, detects every QR code in each image,
 returns the four-corner quadrilateral of every detection, and optionally
-decodes the payload. Everything is written from scratch; no explicit QR library
+decodes the payload. Everything is written from scratch; no QR-specific detection/decoding library
 (\texttt{pyzbar}, \texttt{zxing}, \texttt{cv2.QRCodeDetector}, etc.) and no
 deep-learning framework are used.  The only third-party dependencies are
 OpenCV (image I/O, thresholding, contour finding, perspective warp) and
@@ -62,7 +62,7 @@ The pipeline is:
           axis-aligned box for \texttt{output.csv} \texttt{corners}, and
           keep \texttt{oriented\_corners} plus \texttt{finder\_side} for the
           decoder.
-    \item If \texttt{--decode=yes}, for every detection run the decoder
+    \item If \texttt{---decode=yes}, for every detection run the decoder
           described later in this document.
     \item Write \texttt{output.csv} with one row per detected QR (or one
           empty row for images with zero QRs).
@@ -70,7 +70,7 @@ The pipeline is:
 
 \section{Image preprocessing and detection cascade}
 
-All binarizations use the scaled working image. Phase~1 always runs; later
+All binarizations in Phases 1--5b use the scaled working image. Phase~1 always runs; later
 phases run only when \textbf{no} QR has been assembled yet
 (\texttt{len(qrcodes)==0}) and the total candidate count across pools is
 $\le 160$ (circuit breaker). Each binary image feeds
@@ -147,7 +147,7 @@ $5\%$ around the centre (\texttt{\_BBOX\_EXPAND = 1.05}) before integer
 
 \subsection{Finder Pattern Candidates}
 
-A QR finder pattern is a $7\times7$ module square with dark/light/dark/light/dark rings
+A QR finder pattern is a $7\times7$ module square with dark/light/dark/light/dark rings 
 in the ratio $1{:}1{:}3{:}1{:}1$. In a binary image it
 shows up as three nested contours.
 
@@ -177,13 +177,15 @@ most non-finder blobs that still satisfy nested-area ratios.
 
 \subsection{Candidate Merging}
 
-All per-strategy pools are concatenated. Merge radius between candidates
-$i$ and $j$ is $0.6 \cdot \max(\sqrt{\text{area}_i}, \sqrt{\text{area}_j})$
-(\texttt{merge\_factor}=0.6 in \texttt{\_merge\_candidates}). If Euclidean
-distance between centres is below that threshold, they belong to one
-cluster; greedy processing in descending \texttt{size} keeps one
-representative per cluster. The merged list is capped at $300$ entries
-before triplet search.
+All per-strategy pools are concatenated. In \texttt{\_merge\_candidates},
+the parameter \texttt{merge\_factor} is set to $0.6$. The merge radius is
+\[
+r_{ij} = 0.6 \cdot \max\!\left(\sqrt{\mathrm{area}_i}, \sqrt{\mathrm{area}_j}\right).
+\]
+If Euclidean distance between centres is below this threshold, the two
+candidates are assigned to the same cluster. Greedy processing in
+descending \texttt{size} keeps one representative per cluster. The merged
+list is capped at $300$ entries before triplet search.
 
 \subsection{Triplet grouping and assignment}
 
@@ -229,13 +231,12 @@ s =
 + 100\,|r_{\text{hyp}} - 1.414|
 + 60\,\sigma_{\text{size}} .
 \]
-The middle term uses $(r_{\text{side}} - 1)$ without an absolute value,
-as in \texttt{main.py}.
+\textit{Note:} Since $r_{\text{side}}=\max(d_1,d_2)/\min(d_1,d_2)\ge1$ in this code path, $(r_{\text{side}}-1)$ is non-negative (equivalent to $|r_{\text{side}}-1|$), identical to \texttt{main.py}.
 
 Post-filters: when $n \ge 20$, triplets whose legs exceed
 $1.8\times$ the 40th percentile of nearest-neighbour distances are dropped
 (modal filter against cross-QR triplets). Triplets whose estimated quad
-contains more than three finder centres in total are hard-rejected. Finders
+contains more than three finder centres in total are always rejected. Finders
 already used in accepted triplets can be re-grouped in a second pass when
 $3 \le \text{unused} \le 45$.
 
@@ -250,8 +251,8 @@ parallelogram completion with $0.4\times$ an extension estimate.
 
 \section{QR Decoding}
 
-Decoding is optional and is controlled by \texttt{--decode=yes} or
-\texttt{--decode=no} (default \texttt{yes}). When off, decoding is skipped
+Decoding is optional and is controlled by \texttt{---decode=yes} or
+\texttt{---decode=no} (default \texttt{yes}). When off, decoding is skipped
 and the \texttt{content} field is left empty; when on there is no per-image
 time budget. \texttt{QRDecoder.decode} tries two corner orderings (CW mirror
 then CCW) and four cyclic rotations of each ($2\times4=8$ attempts) before
@@ -322,8 +323,7 @@ mask function is XOR-ed with the bit value.
 
 \subsection{Reed--Solomon Error Correction}
 
-Error correction is done over $GF(2^8)$ with primitive polynomial
-\texttt{0x11D}. The implementation comprises:
+Reed--Solomon arithmetic is performed in $GF(2^8)$ using the QR-standard primitive polynomial $x^8 + x^4 + x^3 + x^2 + 1$ (hex \texttt{0x11D}). The implementation comprises:
 
 \begin{itemize}[leftmargin=1.4em, itemsep=0.2em]
   \item Precomputed log / anti-log tables for $GF(256)$ arithmetic.
@@ -357,7 +357,7 @@ Kanji        & \texttt{1000} & 13 bits/char, Shift-JIS \\
 \end{center}
 
 ECI designators, FNC1 markers and structured-append headers are
-skipped rather than honoured, which is sufficient for the vast
+skipped rather than implemented, which is sufficient for the vast
 majority of QRs in the data set.
 
 \section{Libraries and Algorithms}
@@ -407,7 +407,7 @@ measurement below is wall-clock time reported by the program itself
 and includes process-pool startup. Table values are from one run per
 setting; wall-clock can vary across runs.
 
-\subsection{Detection Only (\texttt{--decode=no})}
+\subsection{Detection Only (\texttt{---decode=no})}
 
 \begin{center}
 \begin{tabular}{@{}lrrrrrrr@{}}
@@ -427,7 +427,7 @@ $0.598$ / $0.707$. In the measured run, wall-clock time is about
 $14$\,ms/image on the train split and about $20$\,ms/image on the valid split under the measured
 hardware (valid has fewer images so fixed pool overhead is amortised less).
 
-\subsection{Detection + Decoding (\texttt{--decode=yes})}
+\subsection{Detection + Decoding (\texttt{---decode=yes})}
 
 F1 is unchanged from above (decoding does not alter the predicted
 quadrilaterals). The table adds decoding statistics.
@@ -494,12 +494,12 @@ Typical decoding failures (given that detection succeeded):
 
 \subsection{Speed}
 
-Detection is near the $20$\,ms/image target on the training split.
+Detection runtime in the measured public runs is 14 ms/image (train) and 20 ms/image (valid) without decoding.
 Decoding is slower because each detection tries eight corner orderings,
 then finder refinement; if that fails, up to four versions are tried and
 for each version up to four quiet-zone margins are tested before giving
 up. Up to twelve (EC level, mask) pairs are tried per matrix.
-Decoding has no time cap and can be disabled with \texttt{--decode=no}.
+Decoding can be disabled with \texttt{---decode=no}.
 
 \subsection{Reproducibility}
 
@@ -539,8 +539,6 @@ and input CSV order, output row ordering is deterministic.
         mode indicators.
   \item Version $\ge 7$ version-info codewords are not decoded, so an
         off-by-one version estimate on large QRs goes uncaught.
-  \item Kanji mode is implemented but not tested (no Kanji
-        QRs in the public set).
 \end{itemize}
 
 \subsection{Possible Improvements}
@@ -587,8 +585,8 @@ These are hand-set constants, not weights from gradient-based training.
 Behaviour on a private test set can differ if image statistics differ,
 but nothing in the pipeline memorises per-image labels from the public CSVs.
 
-Re-running the evaluation on the train or valid split yields
-byte-identical \texttt{output.csv} files (no randomness, no
+Re-running the evaluation on the train or valid split gives
+identical \texttt{output.csv} files (no randomness, no
 timing-dependent behaviour), so any cross-run variation in reported
 F1 will come from changes to the program itself, not from
 stochasticity.
